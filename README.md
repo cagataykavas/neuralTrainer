@@ -1,79 +1,222 @@
-# NeuralTrainer
+# NeuralTrainer — Neural Networks from Scratch with Live Visualization
 
-A repository reserved for a reusable neural-network training toolkit.
+An educational neural-network trainer implemented with **NumPy, Tkinter and Matplotlib**.
 
-## Current status
+The project builds a fully connected feed-forward neural network without TensorFlow or PyTorch, implements explicit forward/backward propagation, supports configurable hidden layers and loss functions, and provides a desktop GUI for editing architecture, training data, learning rate, activation functions, weights and biases.
 
-**Early-stage / scaffold.** The repository currently contains project ignore configuration but does not yet contain a committed training implementation. This README intentionally documents that state rather than claiming functionality that is not present in the repository.
+Its main goal is not benchmark performance. It is to make the mechanics of a neural network visible and editable while it trains.
 
-The planned direction is a small, experiment-friendly training framework that makes common deep-learning workflows reproducible and easy to compare.
+## Highlights
 
-## Intended scope
+- Dense neural network implemented directly in NumPy
+- Explicit forward propagation
+- Explicit backpropagation and gradient descent
+- Configurable number and size of hidden layers
+- Per-hidden-layer activation selection
+- Multiple loss functions
+- Gradient clipping
+- Random or manually entered parameters
+- Live network topology visualization
+- Weight, bias and neuron-value visualization
+- Live response curves through every layer
+- Loss-vs-iteration plotting
+- Tkinter desktop interface
 
-The project is intended to grow around a few practical concerns that repeatedly appear in ML experiments:
+## Supported activations
 
-- dataset and DataLoader configuration;
-- model construction through a consistent interface;
-- train / validation loops;
-- checkpoint saving and restoration;
-- reproducible random seeds;
-- metric history;
-- early stopping;
-- learning-rate scheduling;
-- device selection;
-- experiment configuration;
-- evaluation and inference helpers.
+Hidden layers can use:
 
-## Proposed architecture
+- ReLU
+- Leaky ReLU
+- Sigmoid
+- Tanh
+- Softplus
+- Softmax (educational/experimental)
+
+The current output layer is intentionally linear / identity, which makes the application most directly suited to small regression and function-approximation experiments.
+
+## Supported losses
+
+- Mean Squared Error (MSE)
+- Mean Error (ME)
+- Manhattan / L1 error
+- Log error
+- Log-likelihood-style loss
+
+Some combinations are included for experimentation rather than as recommended mathematically paired activation/loss designs.
+
+## How it works
+
+For each layer, the network performs
+
+```text
+Z[l] = W[l] A[l-1] + b[l]
+A[l] = activation(Z[l])
+```
+
+The output layer uses the identity activation.
+
+During backpropagation, the selected loss derivative is propagated backward through every layer. Weight and bias gradients are computed explicitly with NumPy matrix operations and then updated with gradient descent.
+
+Before each parameter update, gradients are clipped to reduce the chance of unstable exploding updates during interactive experiments.
+
+## GUI
+
+The Tkinter interface allows the user to configure the network without changing the source code.
+
+### Network configuration
+
+Users can choose:
+
+- number of inputs;
+- number of outputs;
+- number of hidden layers;
+- neuron count for every hidden layer;
+- activation function for every hidden layer;
+- learning rate;
+- training iterations;
+- loss function.
+
+### Training sample
+
+The GUI dynamically creates input and target fields based on the configured input/output dimensions.
+
+The recovered version trains on the values entered in this panel as a single column sample. The NumPy network class itself accepts matrices with multiple sample columns and can therefore be used independently of the GUI for batch experiments.
+
+### Manual parameters
+
+Random initialization can be disabled. The interface then generates matrix-style controls for every weight and bias in the network.
+
+This allows a user to inspect and deliberately set the exact parameters of a small neural network, which is useful when learning how forward propagation and backpropagation behave.
+
+## Visualization
+
+### Network topology
+
+A live diagram shows:
+
+- every layer;
+- neurons;
+- connections;
+- current weights;
+- bias values;
+- neuron activations for the active input;
+- current training iteration.
+
+### Network response
+
+The application can sweep the first input across a configurable numerical range while holding the remaining inputs at zero.
+
+It then plots the response of every neuron in every layer. This makes it possible to watch how the learned function changes during optimization rather than inspecting only the final prediction.
+
+### Training loss
+
+After training, the loss history is plotted over all iterations.
+
+## Repository structure
 
 ```text
 neuralTrainer/
-├── neural_trainer/
-│   ├── trainer.py
-│   ├── config.py
-│   ├── metrics.py
-│   ├── checkpointing.py
-│   └── utils.py
-├── examples/
-├── tests/
-├── requirements.txt
+├── neural_trainer.py    # NumPy neural network + Tkinter GUI
+├── requirements.txt     # Python dependencies
+├── .gitignore
 └── README.md
 ```
 
-## Planned usage
+## Installation
 
-The target API is deliberately simple. A future training experiment should be expressible approximately as:
+Python 3 is required. Tkinter is included with many standard Python distributions, although some Linux distributions package it separately.
 
-```python
-trainer = Trainer(
-    model=model,
-    optimizer=optimizer,
-    loss_fn=loss_fn,
-    device="cuda",
-)
+Create a virtual environment:
 
-history = trainer.fit(
-    train_loader=train_loader,
-    val_loader=val_loader,
-    epochs=50,
-)
+```bash
+python -m venv .venv
 ```
 
-This snippet describes the intended interface; it is **not yet implemented on the current main branch**.
+Activate it and install the numerical/plotting dependencies:
 
-## Roadmap
+```bash
+pip install -r requirements.txt
+```
 
-1. Add a minimal PyTorch training loop.
-2. Add validation and metric tracking.
-3. Add checkpoint/resume support.
-4. Add deterministic experiment configuration.
-5. Add scheduler and early-stopping hooks.
-6. Add a small example dataset/model.
-7. Add tests for training-state and checkpoint behaviour.
-8. Package the reusable components cleanly.
+## Run the application
 
-## Why keep this repository visible?
+```bash
+python neural_trainer.py
+```
 
-A small reusable trainer can be valuable across computer-vision, NLP and time-series experiments, but only when it provides real code instead of another abstraction layer around a ten-line training loop. The goal of this repository is therefore to grow incrementally and keep every abstraction justified by an actual experiment.
+A Tkinter window will open with the network configuration controls.
 
-Until the implementation lands, treat this repository as a documented project scaffold rather than a finished library.
+## Programmatic use
+
+The `NeuralNetwork` class can also be used without the GUI:
+
+```python
+import numpy as np
+from neural_trainer import NeuralNetwork
+
+X = np.array([[1.0], [2.0], [3.0]])
+Y = np.array([[6.0]])
+
+nn = NeuralNetwork(
+    input_size=3,
+    hidden_layers=[4, 4],
+    output_size=1,
+    activations=["leaky_relu", "tanh"],
+    error_name="mse",
+    learning_rate=0.0005,
+    seed=42,
+)
+
+losses = nn.train(X, Y, iterations=1000)
+prediction = nn.predict(X)
+
+print(prediction)
+```
+
+## Recovered-project cleanup
+
+This repository was reconstructed from an earlier version of the project that had not been committed to GitHub. The restored implementation preserves the original architecture and GUI concept while correcting copy/paste indentation damage and several small robustness issues.
+
+Notable cleanup includes:
+
+- valid Python module structure and entry point;
+- numerically safer sigmoid and softplus implementations;
+- shape validation for manually supplied parameters;
+- corrected derivative sign for mean error;
+- clearer separation between hidden activations and the identity output;
+- safer visualization update intervals;
+- corrected input-layer labeling in response plots;
+- reusable `predict()` method;
+- optional deterministic seed.
+
+## Mathematical caveats
+
+The project is intentionally educational, so several design choices should be interpreted accordingly.
+
+- The softmax derivative helper is only an element-wise approximation; the full derivative is a Jacobian.
+- Softmax is therefore not intended here as a mathematically complete hidden-layer backpropagation implementation.
+- Log-likelihood is normally paired with a probability-producing output activation, whereas this implementation uses a linear output layer.
+- Initial weights are sampled from a wide uniform interval to preserve the behaviour of the recovered project rather than using Xavier/He initialization.
+- Training uses straightforward full-batch gradient descent rather than modern optimizers.
+
+These are useful directions for extension rather than hidden implementation details.
+
+## Possible extensions
+
+- Xavier and He initialization
+- categorical softmax + cross-entropy output
+- mini-batch training
+- Momentum / RMSProp / Adam
+- train/validation datasets
+- CSV import
+- model save/load
+- numerical gradient checking
+- proper softmax Jacobian-vector products
+- architecture presets
+- interactive decision-surface plots
+- unit tests for backpropagation
+
+## Portfolio note
+
+This is intentionally a **from-scratch neural-network project**. Frameworks such as PyTorch make all of this substantially easier; the value of this implementation is that the weight matrices, activation functions, gradients, parameter updates and neuron responses are directly inspectable rather than delegated to an autograd engine.
