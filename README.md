@@ -1,106 +1,141 @@
-# Parking RL Lab
+# Parking RL Lab — Experimental
 
-[![CI](https://github.com/cagataykavas/neuralTrainer/actions/workflows/ci.yml/badge.svg)](https://github.com/cagataykavas/neuralTrainer/actions/workflows/ci.yml)
+This branch contains the research-heavy version of the autonomous parking environment: **Double DQN, PPO, SAC, curriculum learning, residual RL, hierarchical state and harder scenario experiments**.
 
-A self-contained reinforcement-learning environment for autonomous parking. It combines oriented-rectangle physics, configurable parking scenarios, PPO and SAC agents, residual control, and a curriculum that moves one policy from coarse discrete commands to continuous steering and throttle.
+For a cleaner portfolio/demo baseline, use `parking-rl-stable`. This branch is intentionally allowed to be more aggressive and less conservative because its purpose is ablation and research exploration.
 
-This is an engineering portfolio project, not a claim that parking is solved. The repository includes runnable verification and an experiment protocol; trained-policy performance should be reported only after multi-seed evaluation.
+## Algorithms
 
-## Why this project is interesting
+- **Double DQN + Dueling Network** for fixed `DISCRETE_9` and `DISCRETE_43` control
+- **PPO** for categorical discrete policies and squashed-Gaussian continuous policies
+- **SAC** for native continuous steering/throttle with twin critics and entropy tuning
 
-- One stable policy representation spans 9 commands, 43 commands, an annealed transition, and continuous control.
-- PPO supports categorical and squashed-Gaussian policies; SAC uses twin critics and automatic entropy tuning.
-- A geometric controller can be used as a residual-RL baseline.
-- Collision checks use the separating axis theorem on rotated rectangles.
-- Training supports multiple cars, custom JSON layouts, checkpoints, CSV logs, and replay rendering in a separate process.
-- `--describe-json` exposes the observation, action, termination, artifact, and resolved-configuration contract in machine-readable form.
+## Main experimental idea: action-space curriculum
 
-## Quick verification
+The core curriculum is:
 
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-python -m pip install -e ".[dev]"
-
-python parking_rl.py --smoke-test
-python parking_rl.py --describe-json
-pytest
+```text
+9 discrete actions
+        ↓
+43 discrete actions
+        ↓
+annealed 43-action quantization → continuous motor command
+        ↓
+fully continuous steering/throttle
 ```
 
-The smoke test checks both neural-policy families, the action tables, collision geometry, reset semantics, and a complete environment step. It prints a JSON report and does not start training.
+For PPO, the curriculum keeps a stable two-dimensional latent motor policy while the action adapter changes the executed control resolution. This avoids replacing a 9-way policy head with a 43-way head and then a continuous head mid-training.
 
-## Train and interact
+The default phases are configured through `CURRICULUM_PHASES` in `parking_rl.py`.
+
+## Residual RL
+
+The environment includes a geometric parking controller that can provide a base command. With residual RL enabled, the policy learns a correction:
+
+```text
+executed_action = base_controller + residual_scale * policy_action
+```
+
+This provides a useful experiment against pure end-to-end RL: instead of learning basic approach geometry from zero, the neural policy can focus on correcting the hand-designed controller.
+
+Enable it in `CONFIG`:
+
+```python
+"USE_RESIDUAL_RL": True,
+"RESIDUAL_SCALE": 0.35,
+```
+
+## Hierarchical state
+
+The state can include an explicit three-stage phase indicator:
+
+```text
+approach → align → settle
+```
+
+This is intentionally simple and inspectable. It lets the policy condition on the qualitative parking phase without introducing a second learned manager that would make debugging and attribution harder.
+
+## Training examples
+
+### Curriculum PPO
 
 ```bash
-# Headless curriculum training
 python parking_rl.py \
   --mode TRAIN \
   --algorithm PPO \
   --action-mode CURRICULUM \
   --scenario RANDOM \
-  --episodes 500 \
+  --episodes 3000 \
   --headless
-
-# Continuous SAC
-python parking_rl.py --mode TRAIN --algorithm SAC --action-mode CONTINUOUS --episodes 500 --headless
-
-# Load the latest matching checkpoint
-python parking_rl.py --mode INFERENCE --algorithm PPO --action-mode CURRICULUM
-
-# Drive the first car with W/A/S/D; R resets and Q exits
-python parking_rl.py --mode PLAY --action-mode CONTINUOUS
 ```
 
-The central `CONFIG` dictionary remains available for reward ablations, curriculum lengths, residual control, rendering cadence, and custom checkpoint paths.
+### Continuous SAC
 
-## System design
-
-```mermaid
-flowchart TD
-    S["Scenario + seeded reset"] --> O["16-value observation"]
-    O --> P["PPO or SAC policy"]
-    P --> A["Action adapter"]
-    A --> E["Parking physics"]
-    E --> R["Reward + termination"]
-    R --> P
-    E --> L["CSV, checkpoint, replay"]
+```bash
+python parking_rl.py \
+  --mode TRAIN \
+  --algorithm SAC \
+  --action-mode CONTINUOUS \
+  --scenario WALLS \
+  --episodes 3000 \
+  --headless
 ```
 
-| Control mode | Executed command | Policy-head strategy |
-|---|---:|---|
-| `DISCRETE_9` | 9 steering/throttle pairs | PPO categorical or quantized motor policy |
-| `DISCRETE_43` | 42 grid pairs + neutral | PPO categorical or quantized motor policy |
-| `CONTINUOUS` | 2 values in `[-1, 1]` | Squashed Gaussian |
-| `CURRICULUM` | 9 → 43 → blended → continuous | Stable 2D latent motor policy |
+### Double DQN baseline
 
-The default observation has 13 geometric values plus a three-value hierarchical phase indicator: approach, align, or settle. See [architecture](docs/ARCHITECTURE.md) for the state and reward contracts.
+```bash
+python dqn_agent.py --action-mode DISCRETE_43 --episodes 1600 --seed 42
+```
 
-## Scenarios and outputs
+DQN remains fixed-discrete by design. The curriculum experiment is mainly intended for PPO/SAC-style motor policies rather than forcing value-based DQN into an artificial continuous approximation.
 
-Built-in scenarios are `SIMPLE`, `WALLS`, and randomized selection. `CUSTOM` loads cars, lots, and walls from JSON; [the U-shaped example](examples/u_shape_trap.json) documents the schema.
+## Experimental matrix
 
-Runs write to `parking_rl_output/` by default:
+Useful ablations include:
 
-- `training_log.csv` — episode, curriculum stage, reward, steps, success count, and replay status
-- `checkpoints/` — best, latest, and curriculum-boundary model snapshots
-- optional asynchronous episode replays — visualization never blocks the learner
+| Experiment | Variable |
+|---|---|
+| discrete resolution | 9 vs 43 commands |
+| action representation | fixed discrete vs continuous |
+| curriculum | fixed mode vs `9 → 43 → continuous` |
+| residual control | pure RL vs controller + residual |
+| state hierarchy | 13 geometric values vs + phase one-hot |
+| scenario difficulty | SIMPLE vs WALLS vs RANDOM vs CUSTOM |
+| policy family | Double DQN vs PPO vs SAC |
+| number of cars | single-car vs multi-car |
 
-For defensible comparisons, use fixed seed splits and report success rate, collision rate, timeout rate, final position/alignment error, and episode length. The [experiment guide](docs/EXPERIMENT_GUIDE.md) gives a concrete protocol.
+## Environment details
+
+- oriented-rectangle car, lot and wall geometry;
+- separating-axis-theorem collision checks;
+- configurable reward shaping for progress, bearing, smooth control, collisions and parking success;
+- custom JSON layouts;
+- reproducible seeds;
+- checkpoint boundaries at curriculum transitions;
+- CSV experiment logs;
+- asynchronous replay rendering in a separate process;
+- manual keyboard PLAY mode for sanity-checking dynamics.
+
+## Hard scenario
+
+`examples/u_shape_trap.json` provides a U-shaped parking scenario designed to expose weaknesses in greedy/direct-to-goal behavior. It is useful for comparing pure RL, residual control and curriculum policies.
 
 ## Repository map
 
 ```text
-parking_rl.py                 self-contained environment, agents, training, CLI
-examples/u_shape_trap.json    custom-scenario example
-tests/test_parking_rl.py      physics, curriculum, scenario, and contract tests
-docs/ARCHITECTURE.md          design decisions and interfaces
-docs/EXPERIMENT_GUIDE.md      reproducible evaluation protocol
+parking_rl.py                 environment, PPO, SAC, curriculum, residual RL, rendering
+dqn_agent.py                  Double-DQN / dueling discrete baseline
+examples/u_shape_trap.json    harder custom scenario
+tests/test_parking_rl.py      geometry, curriculum, reproducibility and integration tests
+docs/ARCHITECTURE.md          state/action/reward architecture
+docs/EXPERIMENT_GUIDE.md      multi-seed evaluation protocol
 ```
 
-## Current evidence
+## Stable vs experimental
 
-- Static compilation passes.
-- Automated tests cover geometry, seeded resets, custom scenario loading, curriculum boundaries, and the JSON contract.
-- The smoke path executes PPO and SAC forward passes and one environment transition.
-- No benchmark score is advertised yet; convergence and multi-seed results remain experiment work rather than README theatre.
+- `parking-rl-stable`: recruiter/demo-facing fixed-action baselines, DQN/PPO/SAC, conservative defaults.
+- `parking-rl-experimental`: curriculum, residual control, hierarchy and harder ablations.
 
+## Evidence boundary
+
+This branch contains the runnable research machinery, not fabricated performance claims. Any success-rate or reward table should come from real multi-seed training runs with the exact config/checkpoint recorded.
