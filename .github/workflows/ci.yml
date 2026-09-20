@@ -15,5 +15,5 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt pytest ruff
       - run: ruff check gradient_check.py tests
-      - run: pytest -q
+      - run: python -m pytest -q
       - run: python -m compileall -q gradient_check.py neural_trainer.py
