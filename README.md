@@ -21,6 +21,7 @@ Its main goal is not benchmark performance. It is to make the mechanics of a neu
 - Live response curves through every layer
 - Loss-vs-iteration plotting
 - Tkinter desktop interface
+- Integrated Gradients attribution with completeness evidence
 
 ## Supported activations
 
@@ -117,8 +118,11 @@ After training, the loss history is plotted over all iterations.
 
 ```text
 neuralTrainer/
-├── neural_trainer.py    # NumPy neural network + Tkinter GUI
-├── requirements.txt     # Python dependencies
+├── integrated_gradients.py # bounded, traceable feature attribution
+├── docs/                   # numerical contracts and limitations
+├── tests/                  # deterministic XAI tests
+├── neural_trainer.py       # NumPy neural network + Tkinter GUI
+├── requirements.txt        # Python dependencies
 ├── .gitignore
 └── README.md
 ```
@@ -174,6 +178,26 @@ prediction = nn.predict(X)
 print(prediction)
 ```
 
+Generate an explanation for a selected output without an autograd framework:
+
+```python
+from integrated_gradients import integrated_gradients
+
+report = integrated_gradients(
+    nn,
+    X,
+    baseline=np.zeros_like(X),
+    target_index=0,
+    steps=128,
+)
+
+print(report.attributions)
+print(report.completeness_delta)
+```
+
+See [`docs/integrated-gradients.md`](docs/integrated-gradients.md) for the
+numerical contract, digest evidence, validation rules and limitations.
+
 ## Recovered-project cleanup
 
 This repository was reconstructed from an earlier version of the project that had not been committed to GitHub. The restored implementation preserves the original architecture and GUI concept while correcting copy/paste indentation damage and several small robustness issues.
@@ -212,6 +236,7 @@ These are useful directions for extension rather than hidden implementation deta
 - CSV import
 - model save/load
 - numerical gradient checking
+- attribution stability across multiple domain-valid baselines
 - proper softmax Jacobian-vector products
 - architecture presets
 - interactive decision-surface plots

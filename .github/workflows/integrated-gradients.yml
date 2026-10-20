@@ -1,0 +1,31 @@
+name: integrated-gradients
+
+on:
+  pull_request:
+    paths:
+      - "integrated_gradients.py"
+      - "neural_trainer.py"
+      - "tests/test_integrated_gradients.py"
+      - "requirements.txt"
+      - ".github/workflows/integrated-gradients.yml"
+  push:
+    branches: [main]
+
+jobs:
+  xai-quality:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -r requirements.txt pytest ruff
+      - run: ruff check integrated_gradients.py tests/test_integrated_gradients.py
+      - run: ruff format --check integrated_gradients.py tests/test_integrated_gradients.py
+      - run: pytest -q tests/test_integrated_gradients.py
+      - run: python -m compileall -q integrated_gradients.py neural_trainer.py
+      - run: python integrated_gradients.py --steps 128 > /tmp/integrated-gradients.json
