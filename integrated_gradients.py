@@ -12,6 +12,8 @@ import numpy as np
 from neural_trainer import NeuralNetwork, get_activation_funcs
 
 MAX_INTEGRATION_STEPS = 4096
+MAX_BASELINES = 16
+MAX_BASELINE_GRADIENT_EVALUATIONS = 65_536
 SUPPORTED_HIDDEN_ACTIVATIONS = {
     "leakyrelu",
     "leaky_relu",
@@ -62,11 +64,61 @@ class IntegratedGradientsReport:
         return payload
 
 
+@dataclass(frozen=True)
+class BaselineStabilityReport:
+    target_index: int
+    steps: int
+    baseline_count: int
+    top_k: int
+    zero_tolerance: float
+    completeness_absolute_tolerance: float
+    completeness_relative_tolerance: float
+    median_attributions: tuple[float, ...]
+    sign_agreement_ratios: tuple[float, ...]
+    min_sign_agreement: float
+    mean_sign_agreement: float
+    min_top_k_overlap: float
+    mean_top_k_overlap: float
+    max_abs_completeness_delta: float
+    model_digest: str
+    input_digest: str
+    baseline_set_digest: str
+
+    def passes_stability(
+        self,
+        *,
+        min_sign_agreement: float = 0.8,
+        min_top_k_overlap: float = 0.8,
+    ) -> bool:
+        """Evaluate explicit, caller-owned baseline stability thresholds."""
+
+        _validate_unit_interval(min_sign_agreement, "min_sign_agreement")
+        _validate_unit_interval(min_top_k_overlap, "min_top_k_overlap")
+        return (
+            self.min_sign_agreement >= min_sign_agreement
+            and self.min_top_k_overlap >= min_top_k_overlap
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        payload = asdict(self)
+        canonical = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        payload["stability_id"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return payload
+
+
 def _validate_tolerance(value: float, name: str) -> None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{name} must be numeric")
     if not math.isfinite(value) or value < 0:
         raise ValueError(f"{name} must be finite and non-negative")
+
+
+def _validate_unit_interval(value: float, name: str) -> None:
+    _validate_tolerance(value, name)
+    if value > 1:
+        raise ValueError(f"{name} must be at most 1")
 
 
 def _single_column(values: Any, *, rows: int, name: str) -> np.ndarray:
@@ -312,6 +364,125 @@ def integrated_gradients(
         model_digest=model_digest,
         input_digest=_array_digest(point),
         baseline_digest=_array_digest(reference),
+    )
+
+
+def audit_baseline_stability(
+    network: NeuralNetwork,
+    sample: Any,
+    *,
+    baselines: list[Any] | tuple[Any, ...],
+    target_index: int = 0,
+    steps: int = 128,
+    top_k: int = 3,
+    zero_tolerance: float = 1e-8,
+    completeness_absolute_tolerance: float = 1e-5,
+    completeness_relative_tolerance: float = 1e-4,
+) -> BaselineStabilityReport:
+    """Audit attribution sign and top-k stability across distinct baselines."""
+
+    _validate_network(network)
+    _validate_target(network, target_index)
+    _validate_steps(steps)
+    _validate_tolerance(zero_tolerance, "zero_tolerance")
+    _validate_tolerance(
+        completeness_absolute_tolerance, "completeness_absolute_tolerance"
+    )
+    _validate_tolerance(
+        completeness_relative_tolerance, "completeness_relative_tolerance"
+    )
+    if not isinstance(baselines, (list, tuple)):
+        raise TypeError("baselines must be a list or tuple")
+    if not 2 <= len(baselines) <= MAX_BASELINES:
+        raise ValueError(f"baselines must contain between 2 and {MAX_BASELINES} items")
+    path_gradient_evaluations = len(baselines) * (steps + 1)
+    if path_gradient_evaluations > MAX_BASELINE_GRADIENT_EVALUATIONS:
+        raise ValueError(
+            "baseline audit exceeds the path-gradient evaluation budget of "
+            f"{MAX_BASELINE_GRADIENT_EVALUATIONS}"
+        )
+    if isinstance(top_k, bool) or not isinstance(top_k, int):
+        raise TypeError("top_k must be an integer")
+    if not 1 <= top_k <= network.input_size:
+        raise ValueError(f"top_k must be in [1, {network.input_size}]")
+
+    point = _single_column(sample, rows=network.input_size, name="sample")
+    reports: list[IntegratedGradientsReport] = []
+    seen_baselines: set[str] = set()
+    for index, baseline in enumerate(baselines):
+        report = integrated_gradients(
+            network,
+            point,
+            baseline=baseline,
+            target_index=target_index,
+            steps=steps,
+        )
+        if report.baseline_digest in seen_baselines:
+            raise ValueError("baselines must be distinct")
+        seen_baselines.add(report.baseline_digest)
+        if not report.passes_completeness(
+            absolute_tolerance=completeness_absolute_tolerance,
+            relative_tolerance=completeness_relative_tolerance,
+        ):
+            raise ValueError(f"baseline {index} failed the completeness gate")
+        reports.append(report)
+
+    attribution_matrix = np.asarray(
+        [report.attributions for report in reports], dtype=np.float64
+    )
+    signs = np.where(
+        np.abs(attribution_matrix) <= zero_tolerance,
+        0,
+        np.sign(attribution_matrix),
+    )
+    sign_agreements = []
+    for feature_signs in signs.T:
+        counts = [np.count_nonzero(feature_signs == value) for value in (-1, 0, 1)]
+        sign_agreements.append(max(counts) / len(reports))
+
+    top_feature_sets: list[set[int]] = []
+    for attributions in attribution_matrix:
+        ranked = sorted(
+            range(network.input_size),
+            key=lambda feature: (-abs(attributions[feature]), feature),
+        )
+        top_feature_sets.append(set(ranked[:top_k]))
+    overlaps = [
+        len(top_feature_sets[left] & top_feature_sets[right]) / top_k
+        for left in range(len(top_feature_sets))
+        for right in range(left + 1, len(top_feature_sets))
+    ]
+
+    baseline_set_digest = hashlib.sha256(
+        json.dumps(sorted(seen_baselines), separators=(",", ":")).encode("ascii")
+    ).hexdigest()
+    model_digests = {report.model_digest for report in reports}
+    input_digests = {report.input_digest for report in reports}
+    if len(model_digests) != 1 or len(input_digests) != 1:
+        raise RuntimeError("baseline explanations do not share one model and input")
+
+    return BaselineStabilityReport(
+        target_index=target_index,
+        steps=steps,
+        baseline_count=len(reports),
+        top_k=top_k,
+        zero_tolerance=float(zero_tolerance),
+        completeness_absolute_tolerance=float(completeness_absolute_tolerance),
+        completeness_relative_tolerance=float(completeness_relative_tolerance),
+        median_attributions=tuple(
+            float(value) for value in np.median(attribution_matrix, axis=0)
+        ),
+        sign_agreement_ratios=tuple(float(value) for value in sign_agreements),
+        min_sign_agreement=float(min(sign_agreements)),
+        mean_sign_agreement=float(np.mean(sign_agreements)),
+        min_top_k_overlap=float(min(overlaps)),
+        mean_top_k_overlap=float(np.mean(overlaps)),
+        max_abs_completeness_delta=max(
+            abs(report.completeness_delta) for report in reports
+        ),
+        model_digest=reports[0].model_digest,
+        input_digest=reports[0].input_digest,
+        baseline_set_digest=baseline_set_digest,
     )
 
 

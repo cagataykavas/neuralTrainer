@@ -3,7 +3,11 @@ import copy
 import numpy as np
 import pytest
 
-from integrated_gradients import input_gradient, integrated_gradients
+from integrated_gradients import (
+    audit_baseline_stability,
+    input_gradient,
+    integrated_gradients,
+)
 from neural_trainer import NeuralNetwork
 
 
@@ -224,3 +228,139 @@ def test_invalid_completeness_tolerance_fails_closed(tolerance: float) -> None:
 
     with pytest.raises(ValueError, match="finite and non-negative"):
         report.passes_completeness(absolute_tolerance=tolerance)
+
+
+def test_baseline_stability_reports_sign_and_top_k_agreement() -> None:
+    network = linear_network(np.array([[3.0, 2.0, 0.5]]), np.array([[0.0]]))
+
+    report = audit_baseline_stability(
+        network,
+        [4.0, 3.0, 2.0],
+        baselines=[[0.0, 0.0, 0.0], [1.0, 0.5, 0.0], [2.0, 1.0, 0.0]],
+        steps=2,
+        top_k=2,
+    )
+
+    assert report.baseline_count == 3
+    assert report.median_attributions == pytest.approx((9.0, 5.0, 1.0))
+    assert report.sign_agreement_ratios == pytest.approx((1.0, 1.0, 1.0))
+    assert report.min_sign_agreement == pytest.approx(1.0)
+    assert report.min_top_k_overlap == pytest.approx(1.0)
+    assert report.max_abs_completeness_delta == pytest.approx(0.0)
+    assert report.passes_stability()
+
+
+def test_baseline_stability_detects_rank_and_sign_instability() -> None:
+    network = linear_network(np.array([[1.0, 1.0]]), np.array([[0.0]]))
+
+    report = audit_baseline_stability(
+        network,
+        [2.0, 2.0],
+        baselines=[[0.0, 1.0], [1.0, 0.0], [3.0, 0.0]],
+        steps=2,
+        top_k=1,
+    )
+
+    assert report.min_sign_agreement == pytest.approx(2 / 3)
+    assert report.min_top_k_overlap == pytest.approx(0.0)
+    assert not report.passes_stability(min_sign_agreement=0.8, min_top_k_overlap=0.5)
+
+
+def test_baseline_set_is_order_independent() -> None:
+    network = linear_network(np.array([[2.0, -1.0]]), np.array([[0.0]]))
+    baselines = [[0.0, 0.0], [0.5, -0.5], [1.0, -1.0]]
+
+    first = audit_baseline_stability(
+        network, [2.0, -2.0], baselines=baselines, steps=2, top_k=1
+    ).to_dict()
+    second = audit_baseline_stability(
+        network,
+        [2.0, -2.0],
+        baselines=list(reversed(baselines)),
+        steps=2,
+        top_k=1,
+    ).to_dict()
+
+    assert first == second
+    assert len(first["stability_id"]) == 64
+
+
+def test_duplicate_baselines_are_rejected() -> None:
+    network = linear_network(np.array([[1.0]]), np.array([[0.0]]))
+
+    with pytest.raises(ValueError, match="distinct"):
+        audit_baseline_stability(
+            network, [1.0], baselines=[[0.0], [0.0]], steps=2, top_k=1
+        )
+
+
+@pytest.mark.parametrize("baselines", [[], [[0.0]], [[0.0]] * 17])
+def test_baseline_count_is_bounded(baselines: list[list[float]]) -> None:
+    network = linear_network(np.array([[1.0]]), np.array([[0.0]]))
+
+    with pytest.raises(ValueError, match="between 2 and 16"):
+        audit_baseline_stability(network, [1.0], baselines=baselines, steps=2, top_k=1)
+
+
+def test_baseline_gradient_budget_is_bounded() -> None:
+    network = linear_network(np.array([[1.0]]), np.array([[0.0]]))
+
+    with pytest.raises(ValueError, match="path-gradient evaluation budget"):
+        audit_baseline_stability(
+            network,
+            [1.0],
+            baselines=[[float(value)] for value in range(16)],
+            steps=4096,
+            top_k=1,
+        )
+
+
+@pytest.mark.parametrize("top_k", [0, 3, True, 1.5])
+def test_invalid_top_k_fails_closed(top_k: object) -> None:
+    network = linear_network(np.array([[1.0, 1.0]]), np.array([[0.0]]))
+    error = TypeError if isinstance(top_k, (bool, float)) else ValueError
+
+    with pytest.raises(error, match="top_k"):
+        audit_baseline_stability(
+            network,
+            [1.0, 1.0],
+            baselines=[[0.0, 0.0], [0.5, 0.5]],
+            steps=2,
+            top_k=top_k,
+        )
+
+
+def test_incomplete_baseline_explanation_is_rejected() -> None:
+    network = NeuralNetwork(
+        1,
+        [1],
+        1,
+        activations=["tanh"],
+        manual_params=[
+            (np.array([[3.0]]), np.array([[0.2]])),
+            (np.array([[2.0]]), np.array([[0.0]])),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="failed the completeness gate"):
+        audit_baseline_stability(
+            network,
+            [2.0],
+            baselines=[[-2.0], [0.0]],
+            steps=2,
+            top_k=1,
+            completeness_absolute_tolerance=0.0,
+            completeness_relative_tolerance=0.0,
+        )
+
+
+@pytest.mark.parametrize("threshold", [-0.1, 1.1, float("nan"), True])
+def test_invalid_stability_threshold_fails_closed(threshold: object) -> None:
+    network = linear_network(np.array([[1.0]]), np.array([[0.0]]))
+    report = audit_baseline_stability(
+        network, [1.0], baselines=[[0.0], [0.5]], steps=2, top_k=1
+    )
+    error = TypeError if isinstance(threshold, bool) else ValueError
+
+    with pytest.raises(error, match="min_sign_agreement"):
+        report.passes_stability(min_sign_agreement=threshold)

@@ -22,6 +22,7 @@ Its main goal is not benchmark performance. It is to make the mechanics of a neu
 - Loss-vs-iteration plotting
 - Tkinter desktop interface
 - Integrated Gradients attribution with completeness evidence
+- Multi-baseline attribution sign and top-k stability audit
 
 ## Supported activations
 
@@ -195,6 +196,12 @@ print(report.attributions)
 print(report.completeness_delta)
 ```
 
+For release-oriented evaluation, `audit_baseline_stability()` compares 2–16
+distinct domain-valid baselines, requires completeness for every explanation,
+and reports feature-sign agreement plus pairwise top-k overlap. The bounded
+audit is deterministic under baseline reordering and rejects duplicates that
+would artificially inflate stability.
+
 See [`docs/integrated-gradients.md`](docs/integrated-gradients.md) for the
 numerical contract, digest evidence, validation rules and limitations.
 
@@ -236,7 +243,7 @@ These are useful directions for extension rather than hidden implementation deta
 - CSV import
 - model save/load
 - numerical gradient checking
-- attribution stability across multiple domain-valid baselines
+- versioned domain policies for attribution baselines
 - proper softmax Jacobian-vector products
 - architecture presets
 - interactive decision-surface plots
